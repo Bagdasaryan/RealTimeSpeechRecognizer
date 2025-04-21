@@ -1,0 +1,72 @@
+{
+    "LABEL_HOME":{
+    "en":"Home",
+    "hy":"Գլխավոր"
+    },
+    
+    "LABEL_SETTINGS":{
+    "en":"Settings",
+    "hy":"Կարգավորումներ"
+    },
+    
+    "LABEL_RESULT":{
+    "en":"Result",
+    "hy":"Արդյունք"
+    },
+    
+    "TITLE_LABGUAGE_FROM":{
+    "en":"The language you want to translate from",
+    "hy":"Լեզուն, որից ցանկանում եք թարգմանել"
+    },
+    
+    "TITLE_LANGUAGE_TO":{
+    "en":"The language you want to translate to",
+    "hy":"Լեզուն, որով ցանկանում եք թարգմանել"
+    },
+    
+    "BTN_RUN_TRANSLATION":{
+    "en":"Run translation",
+    "hy":"Գործարկել թարգմանությունը"
+    },
+    
+    "BTN_STOP_TRANSLATION":{
+    "en":"Stop translation",
+    "hy":"Դադարեցրեք թարգմանությունը"
+    },
+    
+    "LABEL_INTERFACE_LANG":{
+    "en":"Interface language",
+    "hy":"Ինտերֆեյսի լեզու"
+    },
+    
+    "VALUE_ENG":{
+    "en":"English",
+    "hy":"Անգլերեն"
+    },
+    
+    "VALUE_ARM":{
+    "en":"Armenian",
+    "hy":"Հայերեն"
+    },
+    
+    "LABEL_THEME":{
+    "en":"Theme",
+    "hy":"Թեմա"
+    },
+    
+    "VALUE_THEME_DARK":{
+    "en":"Dark",
+    "hy":"Մութ"
+    },
+    
+    "VALUE_THEME_LIGHT":{
+    "en":"Light",
+    "hy":"Լուսավոր"
+    },
+    
+    "LABEL_RESULTS":{
+    "en":"List of translates",
+    "hy":"Թարգմանությունների ցանկ"
+    }
+    
+}
