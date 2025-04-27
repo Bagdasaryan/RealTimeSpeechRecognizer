@@ -56,7 +56,7 @@ class BaseTranslateText:
                    text: str, 
                    source_lang: str, 
                    target_lang: str) -> Optional[str]:
-        """Основная логика перевода"""
+        """Basic translation logic"""
         if not self.oauth_token or not self.folder_id:
             print("Yandex credentials not configured. Using dummy translation.")
             return f"[{source_lang}→{target_lang}] {text}"
@@ -73,7 +73,7 @@ class BaseTranslateText:
                     "texts": [text],
                     "sourceLanguageCode": source_lang,
                     "targetLanguageCode": target_lang,
-                    "format": "PLAIN_TEXT"  # Обязательный параметр
+                    "format": "PLAIN_TEXT"
                 },
                 timeout=10
             )

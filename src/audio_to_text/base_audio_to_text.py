@@ -42,35 +42,33 @@ class BaseAudioToText:
         self.listener = listener
 
     def process_audio_file(self, audio_file_name: str):
-        """Обработка аудиофайла и вызов callback с результатом распознавания"""
+        """Processing an audio file and calling a 'callback' with the recognition result"""
         try:
-            # Получаем путь к аудиофайлу
-            project_root = Path(__file__).parent.parent.parent  # Корень проекта (на два уровня выше)
+            # Getting the path to the audio file
+            project_root = Path(__file__).parent.parent.parent
             audio_file_path = project_root / "src" / "result" / audio_file_name
 
             if not audio_file_path.exists():
-                print(f"Ошибка: файл {audio_file_path} не найден.")
+                print(f"Error: file {audio_file_path} not found.")
                 return
 
-            # print(f"Обработка аудиофайла: {audio_file_path}")
-
-            # Загружаем аудио с помощью pydub
+            # Loading audio with pydub
             audio = AudioSegment.from_wav(str(audio_file_path))
             audio = audio.set_channels(1).set_frame_rate(16000)
 
-            # Запускаем распознавание
+            # Starting recognition
             self.rec.AcceptWaveform(audio.raw_data)
             result = json.loads(self.rec.Result())
             text = result.get("text", "").strip()
 
             if not text:
-                print("Предупреждение: текст не распознан")
-                text = "[Текст не распознан]"
+                print("Warning: text not recognized")
+                text = "[text not recognized]"
 
-            # Передаем распознанный текст через callback
+            # Transfering the recognized text via 'callback'
             if self.listener:
                 self.listener.do_on_audio_to_text(text)
 
         except Exception as e:
-            print(f"Ошибка обработки аудио: {e}")
+            print(f"Audio processing error: {e}")
             return

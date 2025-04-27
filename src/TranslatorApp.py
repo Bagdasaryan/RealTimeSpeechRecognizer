@@ -29,13 +29,18 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.current_lang = "en"
         self.current_theme = "light"
         self.translation_start_time = 0
+        self.translation_stop_time = 0
         
         # Пути для сохранения
-        self.translation_dir = Path("C:/translation_res")
-        self.translation_dir.mkdir(exist_ok=True)
-        self.results_info_file = Path(self.base_dir) / "result" / "info.txt"
-        self.results_info_file.parent.mkdir(exist_ok=True)
+        self.translation_dir = Path(self.base_dir) / "translations"
+        self.results_info_file = Path(self.base_dir) / "result" / "res.txt"
         self.audio_results_dir = Path(self.base_dir) / "result"
+        
+        # Буфер для накопления переведенного текста
+        self.translation_buffer = []
+        
+        # Создаем директории при инициализации
+        self._ensure_directories_exist()
         
         # Настройка окна
         self.title("Translator")
@@ -55,6 +60,12 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.nav_buttons = {}
         self.active_screen = None
         self.widgets_to_translate = {}
+        self.current_selections = {
+            "from_lang": 0,
+            "to_lang": 1,
+            "interface_lang": 0,
+            "theme": 0
+        }
         
         # Инициализация
         self.load_icons()
@@ -62,6 +73,21 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.create_bottom_nav()
         self.show_screen("Home")
         self.apply_theme()
+
+    def _ensure_directories_exist(self):
+        """Создает все необходимые директории, если они не существуют"""
+        try:
+            self.translation_dir.mkdir(parents=True, exist_ok=True)
+            self.results_info_file.parent.mkdir(parents=True, exist_ok=True)
+            self.audio_results_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Создаем файл res.txt, если его нет
+            if not self.results_info_file.exists():
+                with open(self.results_info_file, 'w', encoding='utf-8') as f:
+                    f.write("")
+        except Exception as e:
+            print(f"Error creating directories: {e}")
+            messagebox.showerror("Error", f"Failed to create directories: {str(e)}")
 
     def t(self, key):
         """Функция перевода текста"""
@@ -98,8 +124,9 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.from_combo = ttk.Combobox(self.home_frame, 
                                      values=[self.t("VALUE_ENG"), self.t("VALUE_ARM")], 
                                      state="readonly", font=("Arial", 12))
-        self.from_combo.current(0)  # По умолчанию английский
+        self.from_combo.current(self.current_selections["from_lang"])
         self.from_combo.pack(padx=60, pady=(0, 20), anchor="w")
+        self.from_combo.bind("<<ComboboxSelected>>", lambda e: self.update_current_selection("from_lang"))
         self.widgets_to_translate[from_label] = "TITLE_LABGUAGE_FROM"
         self.widgets_to_translate[self.from_combo] = ("VALUE_ENG", "VALUE_ARM")
 
@@ -110,19 +137,20 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.to_combo = ttk.Combobox(self.home_frame, 
                                    values=[self.t("VALUE_ENG"), self.t("VALUE_ARM")], 
                                    state="readonly", font=("Arial", 12))
-        self.to_combo.current(1)  # По умолчанию армянский
+        self.to_combo.current(self.current_selections["to_lang"])
         self.to_combo.pack(padx=60, pady=(0, 30), anchor="w")
+        self.to_combo.bind("<<ComboboxSelected>>", lambda e: self.update_current_selection("to_lang"))
         self.widgets_to_translate[to_label] = "TITLE_LANGUAGE_TO"
         self.widgets_to_translate[self.to_combo] = ("VALUE_ENG", "VALUE_ARM")
 
-        # Кнопка перевода (черная с белым/черным текстом)
+        # Кнопка перевода
         self.translate_btn = tk.Button(
             self.home_frame, 
             text=self.t("BTN_RUN_TRANSLATION"), 
             bg="black", 
             fg="white", 
             font=("Arial", 12),
-            width=20,
+            width=30,
             height=2,
             borderwidth=0,
             highlightthickness=0,
@@ -157,7 +185,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.int_lang_combo = ttk.Combobox(self.settings_frame, 
                                          values=[self.t("VALUE_ENG"), self.t("VALUE_ARM")], 
                                          state="readonly", font=("Arial", 12))
-        self.int_lang_combo.current(0)
+        self.int_lang_combo.current(self.current_selections["interface_lang"])
         self.int_lang_combo.pack(padx=60, pady=(0, 20), anchor="w")
         self.int_lang_combo.bind("<<ComboboxSelected>>", self.change_interface_language)
         self.widgets_to_translate[int_lang_label] = "LABEL_INTERFACE_LANG"
@@ -170,7 +198,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.theme_combo = ttk.Combobox(self.settings_frame, 
                                       values=[self.t("VALUE_THEME_LIGHT"), self.t("VALUE_THEME_DARK")], 
                                       state="readonly", font=("Arial", 12))
-        self.theme_combo.current(0)
+        self.theme_combo.current(self.current_selections["theme"])
         self.theme_combo.pack(padx=60, pady=(0, 20), anchor="w")
         self.theme_combo.bind("<<ComboboxSelected>>", self.change_theme)
         self.widgets_to_translate[theme_label] = "LABEL_THEME"
@@ -183,30 +211,28 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         result_title.pack(pady=(30, 10), anchor="w", padx=60)
         self.widgets_to_translate[result_title] = "LABEL_RESULTS"
         
-        self.result_text = tk.Text(
-            self.result_frame,
-            wrap=tk.WORD,
-            font=("Arial", 12),
-            padx=20,
-            pady=20,
-            height=15
-        )
-        self.result_text.pack(padx=40, pady=(0, 20), fill=tk.BOTH, expand=True)
+        # Контейнер для списка результатов
+        self.results_container = tk.Frame(self.result_frame, bg="white")
+        self.results_container.pack(padx=40, pady=(0, 20), fill=tk.BOTH, expand=True)
         
-        btn_frame = tk.Frame(self.result_frame, bg="white")
-        btn_frame.pack(pady=10)
-        self.load_results_btn = tk.Button(
-            btn_frame,
-            text=self.t("LABEL_RESULTS"),
-            command=self.load_results,
-            bg="black",
-            fg="white",
-            font=("Arial", 12),
-            width=15
+        # Полоса прокрутки
+        self.results_canvas = tk.Canvas(self.results_container, bg="white", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.results_container, orient="vertical", command=self.results_canvas.yview)
+        self.scrollable_frame = tk.Frame(self.results_canvas, bg="white")
+        
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.results_canvas.configure(
+                scrollregion=self.results_canvas.bbox("all")
+            )
         )
-        self.load_results_btn.pack(side="left", padx=10)
-        self.widgets_to_translate[self.load_results_btn] = "LABEL_RESULTS"
-
+        
+        self.results_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.results_canvas.configure(yscrollcommand=scrollbar.set)
+        
+        self.results_canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
         self.screens = {
             "Home": self.home_frame,
             "Settings": self.settings_frame,
@@ -268,6 +294,9 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                 btn["underline"].configure(bg="#f5f5f5")
 
         self.active_screen = screen_name
+        
+        if screen_name == "Result":
+            self.load_results()
 
     def toggle_translation(self):
         if not self.is_translating:
@@ -300,10 +329,12 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.from_combo.config(state="readonly")
         self.to_combo.config(state="readonly")
         
-        # Сохраняем результат перевода
-        translation_result = self.text_area.get(1.0, tk.END).strip()
-        if translation_result and not translation_result.startswith("Starting translation"):
-            self.save_translation_result(translation_result)
+        self.translation_stop_time = int(time.time() * 1000)
+        
+        # Сохраняем все накопленные переводы в один файл
+        if self.translation_buffer:
+            self.save_translation_result("\n".join(self.translation_buffer))
+            self.translation_buffer = []  # Очищаем буфер
         
         # Останавливаем сервисы
         if self.receiver:
@@ -355,6 +386,8 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         """Callback для переведенного текста"""
         self.text_area.insert(tk.END, f"{text}\n")
         self.text_area.see(tk.END)
+        # Добавляем текст в буфер вместо сохранения в файл
+        self.translation_buffer.append(text)
 
     def change_interface_language(self, event):
         selected = self.int_lang_combo.get()
@@ -362,16 +395,23 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         
         if lang != self.current_lang:
             self.current_lang = lang
+            self.update_current_selection("interface_lang")
             self.update_ui_language()
+    
+    def update_current_selection(self, key):
+        """Обновляет текущие выбранные значения комбобоксов"""
+        if key == "from_lang":
+            self.current_selections["from_lang"] = self.from_combo.current()
+        elif key == "to_lang":
+            self.current_selections["to_lang"] = self.to_combo.current()
+        elif key == "interface_lang":
+            self.current_selections["interface_lang"] = self.int_lang_combo.current()
+        elif key == "theme":
+            self.current_selections["theme"] = self.theme_combo.current()
     
     def update_ui_language(self):
         """Обновляет весь интерфейс при смене языка"""
-        # Сохраняем текущие выборы в комбобоксах
-        from_val = self.from_combo.get()
-        to_val = self.to_combo.get()
-        int_lang_val = self.int_lang_combo.get()
-        theme_val = self.theme_combo.get()
-        
+        # Обновляем виджеты
         for widget, lexeme in self.widgets_to_translate.items():
             if isinstance(lexeme, tuple):
                 # Обновляем значения комбобоксов
@@ -380,29 +420,13 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                 
                 # Восстанавливаем выбор
                 if widget == self.from_combo:
-                    try:
-                        idx = new_values.index(from_val)
-                        widget.current(idx)
-                    except ValueError:
-                        widget.current(0)
+                    widget.current(self.current_selections["from_lang"])
                 elif widget == self.to_combo:
-                    try:
-                        idx = new_values.index(to_val)
-                        widget.current(idx)
-                    except ValueError:
-                        widget.current(1)
+                    widget.current(self.current_selections["to_lang"])
                 elif widget == self.int_lang_combo:
-                    try:
-                        idx = new_values.index(int_lang_val)
-                        widget.current(idx)
-                    except ValueError:
-                        widget.current(0)
+                    widget.current(self.current_selections["interface_lang"])
                 elif widget == self.theme_combo:
-                    try:
-                        idx = new_values.index(theme_val)
-                        widget.current(idx)
-                    except ValueError:
-                        widget.current(0)
+                    widget.current(self.current_selections["theme"])
             else:
                 # Обновляем текст виджетов
                 if hasattr(widget, 'config'):
@@ -424,25 +448,36 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         
         if theme != self.current_theme:
             self.current_theme = theme
+            self.update_current_selection("theme")
             self.apply_theme()
     
     def apply_theme(self):
         """Применяет выбранную тему"""
         try:
             if self.current_theme == "dark":
-                bg_color = "#2d2d2d"
-                fg_color = "#ffffff"
-                text_bg = "#3d3d3d"
-                btn_bg = "#4d4d4d"
-                btn_fg = "#ffffff"  # Белый текст для темной темы
-                highlight_color = "#666666"
+                bg_color = "#1e1e1e"
+                fg_color = "#e0e0e0"
+                text_bg = "#2d2d2d"
+                btn_bg = "#3a3a3a"
+                btn_fg = "#ffffff"
+                highlight_color = "#4d4d4d"
+                combobox_bg = "#333333"
+                combobox_fg = "#ffffff"
+                combobox_border = "#666666"
+                nav_bg = "#2a2a2a"
+                nav_highlight = "#3a3a3a"
             else:
                 bg_color = "#ffffff"
                 fg_color = "#000000"
                 text_bg = "#f5f5f5"
                 btn_bg = "black"
-                btn_fg = "white"  # Белый текст для светлой темы
+                btn_fg = "white"
                 highlight_color = "black"
+                combobox_bg = "#ffffff"
+                combobox_fg = "#000000"
+                combobox_border = "#000000"
+                nav_bg = "#f5f5f5"
+                nav_highlight = "#e0e0e0"
             
             # Основное окно
             self.config(bg=bg_color)
@@ -466,28 +501,81 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                     elif isinstance(widget, (scrolledtext.ScrolledText, tk.Text)):
                         safe_config(widget, bg=text_bg, fg=fg_color, insertbackground=fg_color)
             
-            # Кнопка перевода (особый случай)
+            # Кнопка перевода
             safe_config(self.translate_btn, bg=btn_bg, fg=btn_fg)
             
-            # Стиль для Combobox
+            # Стиль для Combobox с рамкой
             style = ttk.Style()
             style.theme_use('clam')
             style.configure("TCombobox", 
-                          fieldbackground=text_bg,
-                          background=text_bg,
-                          foreground=fg_color)
+                          fieldbackground=combobox_bg,
+                          background=combobox_bg,
+                          foreground=combobox_fg,
+                          bordercolor=combobox_border,
+                          lightcolor=combobox_border,
+                          darkcolor=combobox_border,
+                          arrowsize=15,
+                          padding=10,
+                          relief="solid",
+                          borderwidth=1)
+            
+            style.map('TCombobox', 
+                     fieldbackground=[('readonly', combobox_bg)],
+                     background=[('readonly', combobox_bg)],
+                     foreground=[('readonly', combobox_fg)],
+                     bordercolor=[('readonly', combobox_border)],
+                     lightcolor=[('readonly', combobox_border)],
+                     darkcolor=[('readonly', combobox_border)])
+            
+            # Настройка закругленных углов для кнопок
+            style.configure("TButton",
+                          borderwidth=1,
+                          relief="solid",
+                          padding=6,
+                          bordercolor=btn_bg,
+                          background=btn_bg,
+                          foreground=btn_fg)
+            
+            style.map("TButton",
+                    background=[('active', btn_bg)],
+                    foreground=[('active', btn_fg)])
             
             # Нижнее меню
+            nav_frame = self.nav_buttons["Home"]["frame"].master
+            safe_config(nav_frame, bg=nav_bg)
+            
+            # Добавляем прямоугольник с закругленными краями под нижним меню для темной темы
+            if hasattr(self, 'nav_highlight_frame'):
+                self.nav_highlight_frame.destroy()
+            
+            if self.current_theme == "dark":
+                self.nav_highlight_frame = tk.Frame(
+                    self,
+                    bg="#3a3a3a",
+                    height=62,
+                    bd=0,
+                    highlightthickness=0
+                )
+                self.nav_highlight_frame.place(relx=0.5, rely=1.0, anchor="s", relwidth=1.0)
+                self.nav_highlight_frame.lower(nav_frame)
+                self.nav_highlight_frame.config(highlightbackground="#3a3a3a")
+            
             for name, btn in self.nav_buttons.items():
-                safe_config(btn["frame"], bg=bg_color)
-                safe_config(btn["icon"], bg=bg_color)
-                safe_config(btn["text"], bg=bg_color, fg=fg_color)
+                safe_config(btn["frame"], bg=nav_bg)
+                safe_config(btn["icon"], bg=nav_bg)
+                safe_config(btn["text"], bg=nav_bg, fg=fg_color)
                 
-                underline_color = highlight_color if name == self.active_screen else bg_color
+                underline_color = nav_highlight if name == self.active_screen else nav_bg
                 safe_config(btn["underline"], bg=underline_color)
                 
                 font = ("Arial", 12, "bold") if name == self.active_screen else ("Arial", 12)
                 safe_config(btn["text"], font=font)
+                
+            # Настройка скроллируемого фрейма результатов
+            if hasattr(self, 'results_container'):
+                safe_config(self.results_container, bg=bg_color)
+                safe_config(self.results_canvas, bg=bg_color)
+                safe_config(self.scrollable_frame, bg=bg_color)
                 
         except Exception as e:
             print(f"Error applying theme: {e}")
@@ -505,64 +593,129 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
             print(f"Error cleaning audio files: {e}")
 
     def save_translation_result(self, result: str):
-        """Сохраняет результат перевода"""
+        """Сохраняет результат перевода в один файл"""
         try:
-            # Создаем имя файла на основе времени начала перевода
-            filename = f"rec_{self.translation_start_time}.txt"
+            # Создаем имя файла на основе времени остановки перевода
+            filename = f"translation_{self.translation_stop_time}.txt"
             filepath = self.translation_dir / filename
             
-            # Сохраняем перевод
+            # Убедимся, что директория существует
+            self.translation_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Сохраняем весь накопленный перевод
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(result)
             
-            # Добавляем запись в info.txt
+            # Убедимся, что директория для res.txt существует
+            self.results_info_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Добавляем запись в res.txt
             with open(self.results_info_file, 'a', encoding='utf-8') as f:
                 f.write(f"{filepath}\n")
                 
-            self.text_area.insert(tk.END, f"\nResults saved to: {filepath}\n")
+            self.text_area.insert(tk.END, f"\nAll translations saved to: {filepath}\n")
+            print(f"Saved all translations to: {filepath}")
         except Exception as e:
-            self.text_area.insert(tk.END, f"\nError saving results: {str(e)}\n")
+            error_msg = f"\nError saving results: {str(e)}\n"
+            self.text_area.insert(tk.END, error_msg)
+            print(error_msg)
+            messagebox.showerror("Error", f"Failed to save results: {str(e)}")
 
     def load_results(self):
         """Загружает историю переводов"""
         try:
-            self.result_text.delete(1.0, tk.END)
+            # Очищаем предыдущие результаты
+            for widget in self.scrollable_frame.winfo_children():
+                widget.destroy()
             
+            # Проверяем существование файла и его содержимое
             if not self.results_info_file.exists():
-                self.result_text.insert(tk.END, "No translation history found")
+                no_results_label = tk.Label(
+                    self.scrollable_frame, 
+                    text=self.t("NO_RESULTS_FOUND"),
+                    font=("Arial", 12),
+                    bg="white" if self.current_theme == "light" else "#1e1e1e",
+                    fg="black" if self.current_theme == "light" else "#e0e0e0"
+                )
+                no_results_label.pack(pady=20)
                 return
                 
             with open(self.results_info_file, 'r', encoding='utf-8') as f:
                 lines = [line.strip() for line in f.readlines() if line.strip()]
                 
             if not lines:
-                self.result_text.insert(tk.END, "Translation history is empty")
+                no_results_label = tk.Label(
+                    self.scrollable_frame, 
+                    text=self.t("NO_RESULTS_FOUND"),
+                    font=("Arial", 12),
+                    bg="white" if self.current_theme == "light" else "#1e1e1e",
+                    fg="black" if self.current_theme == "light" else "#e0e0e0"
+                )
+                no_results_label.pack(pady=20)
                 return
             
+            # Отображаем результаты в обратном порядке (новые сверху)
             for filepath in reversed(lines):
                 if not filepath:
                     continue
                 
-                # Создаем кликабельную ссылку
-                path = Path(filepath)
-                link = tk.Label(
-                    self.result_text,
-                    text=path.name,
-                    fg="blue",
-                    cursor="hand2",
-                    font=("Arial", 12, "underline")
-                )
-                link.bind("<Button-1>", lambda e, p=filepath: self.open_result_file(p))
-                self.result_text.window_create(tk.END, window=link)
-                self.result_text.insert(tk.END, "\n\n")
+                try:
+                    # Получаем только имя файла из полного пути
+                    filename = Path(filepath).name
+                    
+                    # Создаем кликабельную кнопку для каждого результата
+                    result_frame = tk.Frame(
+                        self.scrollable_frame,
+                        bg="white" if self.current_theme == "light" else "#2d2d2d"
+                    )
+                    result_frame.pack(fill="x", pady=2, padx=5)
+                    
+                    result_btn = tk.Button(
+                        result_frame,
+                        text=filename,
+                        font=("Arial", 12),
+                        bg="white" if self.current_theme == "light" else "#2d2d2d",
+                        fg="blue",
+                        relief="flat",
+                        bd=0,
+                        anchor="w",
+                        padx=10,
+                        pady=5,
+                        cursor="hand2"
+                    )
+                    result_btn.bind("<Button-1>", lambda e, p=filepath: self.open_result_file(p))
+                    result_btn.pack(fill="x")
+                    
+                    # Разделитель
+                    separator = tk.Frame(
+                        result_frame,
+                        height=1,
+                        bg="#e0e0e0" if self.current_theme == "light" else "#3a3a3a"
+                    )
+                    separator.pack(fill="x", padx=10)
+                    
+                except Exception as e:
+                    print(f"Error loading result {filepath}: {e}")
+                    continue
                 
         except Exception as e:
-            self.result_text.insert(tk.END, f"Error loading history: {str(e)}")
+            error_label = tk.Label(
+                self.scrollable_frame, 
+                text=f"Error loading history: {str(e)}",
+                font=("Arial", 12),
+                bg="white" if self.current_theme == "light" else "#1e1e1e",
+                fg="red"
+            )
+            error_label.pack(pady=20)
 
     def open_result_file(self, filepath):
-        """Открывает файл с результатом перевода"""
+        """Открывает файл с результатом перевода в проводнике"""
         try:
-            os.startfile(filepath)
+            path = Path(filepath)
+            if path.exists():
+                os.startfile(path.parent)
+            else:
+                messagebox.showerror("Error", f"File not found: {filepath}")
         except Exception as e:
             messagebox.showerror("Error", f"Cannot open file: {str(e)}")
 

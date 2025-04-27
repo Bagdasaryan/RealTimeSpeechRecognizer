@@ -110,7 +110,6 @@ class BaseAudioStreamReceiver:
 
         # Если тишина держится несколько кадров — записываем
         if self._silence_frame_count >= self._silence_required:
-            # print(f"📉 Тихо (RMS {rms:.2f} < порога {silence_threshold:.2f}), проверяем время")
             self._save_frames_to_wav()
             # Массив фреймов очищается только после успешного сохранения
             if self._last_save_time is None or (time.time() - self._last_save_time) >= self._min_duration_seconds:
@@ -132,12 +131,11 @@ class BaseAudioStreamReceiver:
         # Если запись слишком короткая и прошло меньше 3 секунд с предыдущего сохранения, пропускаем
         if duration_seconds < self._min_duration_seconds:
             if self._last_save_time is None or (time.time() - self._last_save_time) < self._min_duration_seconds:
-                # print(f"⏳ Запись слишком короткая ({duration_seconds:.2f} сек), продолжаем накопление данных")
                 return  # Пропускаем сохранение, но продолжаем запись
 
         # Если запись слишком длинная — обрезаем
         if duration_seconds > self._max_duration_seconds:
-            # print(f"⏳ Запись слишком длинная ({duration_seconds:.2f} сек), обрезаем")
+            # print(f"Запись слишком длинная ({duration_seconds:.2f} сек), обрезаем")
             self._frames = self._frames[:int(self._sample_rate * self._max_duration_seconds / self._chunk_size)]
 
         # Сохраняем файл

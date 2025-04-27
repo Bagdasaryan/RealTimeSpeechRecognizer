@@ -83,9 +83,6 @@ class MyAudioCallback(IAudioToTextCallback, IStreamCallback, ITranslatorCallback
                     self.currently_processing = False
 
     def do_on_audio_to_text(self, recognized_text: str):
-        """Обработка распознанного текста (вызывается после process_audio_file)"""
-        # print(f"РАСПОЗНАНО: {recognized_text}")
-        
         # Синхронный перевод текста
         self.translator.translate(
             text=recognized_text,
