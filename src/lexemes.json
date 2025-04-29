@@ -14,7 +14,7 @@
     "hy":"Արդյունք"
     },
     
-    "TITLE_LABGUAGE_FROM":{
+    "TITLE_LANGUAGE_FROM":{
     "en":"The language you want to translate from",
     "hy":"Լեզուն, որից ցանկանում եք թարգմանել"
     },
@@ -47,6 +47,11 @@
     "VALUE_ARM":{
     "en":"Armenian",
     "hy":"Հայերեն"
+    },
+
+    "VALUE_RU":{
+    "en":"Russian",
+    "hy":"Ռուսերեն"
     },
     
     "LABEL_THEME":{

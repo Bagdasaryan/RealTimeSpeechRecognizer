@@ -3,16 +3,25 @@ from typing import Optional
 from translate_text.itranslator_callback import ITranslatorCallback
 
 class BaseTranslateText:
+    """Provides text translation functionality using Yandex Cloud Translation API."""
+    
+    # Suppored languages
+    SUPPORTED_LANGUAGES = {
+        'en': 'English',
+        'ru': 'Russian',
+        'hy': 'Armenian'
+    }
+
     def __init__(self, 
                  oauth_token: Optional[str] = None, 
                  folder_id: Optional[str] = None,
                  default_source_lang: str = 'en',
                  default_target_lang: str = 'hy'):
         """
-        :param oauth_token: Yandex Cloud OAuth токен (None для тестового режима)
+        :param oauth_token: Yandex Cloud OAuth token (None for dummy mode)
         :param folder_id: Yandex Cloud Folder ID
-        :param default_source_lang: Язык оригинала по умолчанию
-        :param default_target_lang: Язык перевода по умолчанию
+        :param default_source_lang: Default source language code
+        :param default_target_lang: Default target language code
         """
         self.oauth_token = oauth_token
         self.folder_id = folder_id
@@ -22,7 +31,7 @@ class BaseTranslateText:
         self.api_endpoint = "https://translate.api.cloud.yandex.net/translate/v2/translate"
 
     def set_text_translator_listener(self, listener: ITranslatorCallback):
-        """Установка callback-обработчика для переведенного текста"""
+        """Sets callback handler for translation results"""
         if not isinstance(listener, ITranslatorCallback):
             raise TypeError("Listener must implement ITranslatorCallback")
         self._listener = listener
@@ -32,31 +41,37 @@ class BaseTranslateText:
                  source_lang: Optional[str] = None,
                  target_lang: Optional[str] = None) -> Optional[str]:
         """
-        Синхронный перевод текста
+        Performs synchronous text translation
         
-        :param text: Текст для перевода
-        :param source_lang: Язык оригинала (если None - используется default_source_lang)
-        :param target_lang: Язык перевода (если None - используется default_target_lang)
-        :return: Переведенный текст (или None при ошибке)
+        Args:
+            text: Text to translate
+            source_lang: Source language code (uses default if None)
+            target_lang: Target language code (uses default if None)
+            
+        Returns:
+            Translated text if successful, None otherwise
         """
-        # Устанавливаем языки по умолчанию если не указаны
+        # Validate language codes
         src_lang = source_lang if source_lang else self.default_source_lang
         trg_lang = target_lang if target_lang else self.default_target_lang
+        
+        if src_lang not in self.SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported source language: {src_lang}")
+        if trg_lang not in self.SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported target language: {trg_lang}")
 
-        # Выполняем перевод
         translated_text = self._translate_text(text, src_lang, trg_lang)
         
-        # Вызываем callback если есть listener и перевод успешен
         if self._listener and translated_text is not None:
             self._listener.do_on_text_translated(translated_text)
             
         return translated_text
 
     def _translate_text(self, 
-                   text: str, 
-                   source_lang: str, 
-                   target_lang: str) -> Optional[str]:
-        """Basic translation logic"""
+                       text: str, 
+                       source_lang: str, 
+                       target_lang: str) -> Optional[str]:
+        """Internal translation logic"""
         if not self.oauth_token or not self.folder_id:
             print("Yandex credentials not configured. Using dummy translation.")
             return f"[{source_lang}→{target_lang}] {text}"
@@ -86,8 +101,12 @@ class BaseTranslateText:
             print(f"Response parsing error: {str(e)}")
             return None
 
-
     def set_default_languages(self, source_lang: str, target_lang: str):
-        """Установка языков по умолчанию"""
+        """Updates default source and target languages"""
+        if source_lang not in self.SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported source language: {source_lang}")
+        if target_lang not in self.SUPPORTED_LANGUAGES:
+            raise ValueError(f"Unsupported target language: {target_lang}")
+            
         self.default_source_lang = source_lang
         self.default_target_lang = target_lang

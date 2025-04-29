@@ -4,10 +4,9 @@ from PIL import Image, ImageTk
 import os
 import time
 import threading
+import queue
 import json
 from pathlib import Path
-from MyAudioCallback import MyAudioCallback
-
 from audio_to_text.base_audio_to_text import BaseAudioToText
 from audio_to_text.iaudio_to_text_callback import IAudioToTextCallback
 from audio_stream_reader.istream_callback import IStreamCallback
@@ -16,84 +15,131 @@ from translate_text.base_translate_text import BaseTranslateText
 from translate_text.itranslator_callback import ITranslatorCallback
 
 
-class TranslatorApp(tk.Tk, ITranslatorCallback):
+class TranslatorApp(tk.Tk, ITranslatorCallback, IStreamCallback, IAudioToTextCallback):
+    LANG_EN = 0
+    LANG_RU = 1
+    LANG_HY = 2
+    
     def __init__(self):
+        """Initialize the translator application"""
         super().__init__()
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         
-        # Загрузка локализации
-        with open(Path(self.base_dir) / 'lexemes.json', 'r', encoding='utf-8') as f:
-            self.lexemes = json.load(f)
+        # Load localization strings
+        try:
+            with open(Path(self.base_dir) / 'lexemes.json', 'r', encoding='utf-8') as f:
+                self.lexemes = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Error loading lexemes: {e}")
+            # Provide default values
+            self.lexemes = {
+                "TITLE_LANGUAGE_FROM": {"en": "Translate from", "hy": "Թարգմանել ից"},
+                "TITLE_LANGUAGE_TO": {"en": "Translate to", "hy": "Թարգմանել դեպի"},
+                "VALUE_ENG": {"en": "English", "hy": "Անգլերեն"},
+                "VALUE_RU": {"en": "Russian", "hy": "Ռուսերեն"},
+                "VALUE_ARM": {"en": "Armenian", "hy": "Հայերեն"},
+                # Add other default values here
+            }
         
-        # Настройки по умолчанию
+        # Default settings
         self.current_lang = "en"
         self.current_theme = "light"
         self.translation_start_time = 0
         self.translation_stop_time = 0
         
-        # Пути для сохранения
+        # Paths for saving files
         self.translation_dir = Path(self.base_dir) / "translations"
         self.results_info_file = Path(self.base_dir) / "result" / "res.txt"
         self.audio_results_dir = Path(self.base_dir) / "result"
         
-        # Буфер для накопления переведенного текста
+        # Translation buffer
         self.translation_buffer = []
         
-        # Создаем директории при инициализации
+        # Create necessary directories
         self._ensure_directories_exist()
         
-        # Настройка окна
+        # Window configuration
         self.title("Translator")
         self.geometry("800x600")
         self.minsize(800, 600)
         self.configure(bg="white")
         
-        # Состояние приложения
+        # Application state
         self.is_translating = False
-        self.audio_callback = None
         self.receiver = None
         self.translation_thread = None
         self.api_available = True
         
-        # Элементы интерфейса
+        # Audio processing queue
+        self.audio_files_queue = queue.Queue()
+        self.audio_processing_thread = None
+        self.audio_running = False
+        self.currently_processing = False
+        self.audio_lock = threading.Lock()
+        
+        # Initialize speech recognition model (default to English)
+        self._initialize_audio_model("en")
+        
+        # Initialize translator
+        self.translator = BaseTranslateText(
+            oauth_token="AQVN0Y5y_ENyewZxxU_0CfaPXUlyiBDL8tU19J06",
+            folder_id="b1g395ej0iqqcob4b562",
+            default_source_lang="en",
+            default_target_lang="hy"
+        )
+        self.translator.set_text_translator_listener(self)
+        
+        # UI elements
         self.icons = {}
         self.nav_buttons = {}
         self.active_screen = None
         self.widgets_to_translate = {}
         self.current_selections = {
-            "from_lang": 0,
-            "to_lang": 1,
-            "interface_lang": 0,
+            "from_lang": self.LANG_EN,
+            "to_lang": self.LANG_HY,  # Default to Armenian
+            "interface_lang": self.LANG_EN,
             "theme": 0
         }
         
-        # Инициализация
+        # Initialize UI
         self.load_icons()
         self.create_screens()
         self.create_bottom_nav()
         self.show_screen("Home")
         self.apply_theme()
 
+    def _initialize_audio_model(self, source_lang: str):
+        """Initialize speech recognition model based on source language"""
+        model_dir = "language_models"
+        model_name = "rumodel" if source_lang == "ru" else "enmodel-small"
+        self.model_path = Path(self.base_dir).parent / model_dir / model_name
+        
+        if hasattr(self, 'audio_to_text') and self.audio_to_text:
+            del self.audio_to_text
+            
+        self.audio_to_text = BaseAudioToText(model_path=str(self.model_path))
+        self.audio_to_text.set_audio_to_text_listener(self)
+
     def _ensure_directories_exist(self):
-        """Создает все необходимые директории, если они не существуют"""
+        """Create necessary directories if they don't exist"""
         try:
             self.translation_dir.mkdir(parents=True, exist_ok=True)
             self.results_info_file.parent.mkdir(parents=True, exist_ok=True)
             self.audio_results_dir.mkdir(parents=True, exist_ok=True)
             
-            # Создаем файл res.txt, если его нет
             if not self.results_info_file.exists():
                 with open(self.results_info_file, 'w', encoding='utf-8') as f:
                     f.write("")
         except Exception as e:
-            print(f"Error creating directories: {e}")
+            print(f"Directory creation error: {e}")
             messagebox.showerror("Error", f"Failed to create directories: {str(e)}")
 
     def t(self, key):
-        """Функция перевода текста"""
+        """Get localized string for the given key"""
         return self.lexemes[key][self.current_lang]
 
     def load_icons(self):
+        """Load UI icons from files"""
         icons_dir = os.path.join(self.base_dir, "icons")
         try:
             for name in ["home", "settings", "result"]:
@@ -109,7 +155,8 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                 self.icons[f"{name}_disabled"] = placeholder
 
     def create_screens(self):
-        # Экран Home
+        """Create all application screens"""
+        # Home screen
         self.home_frame = tk.Frame(self, bg="white")
         
         title = tk.Label(self.home_frame, text=self.t("LABEL_HOME"), 
@@ -117,33 +164,33 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         title.pack(pady=(30, 10), anchor="w", padx=60)
         self.widgets_to_translate[title] = "LABEL_HOME"
 
-        # Выбор языка исходного текста
-        from_label = tk.Label(self.home_frame, text=self.t("TITLE_LABGUAGE_FROM"), 
+        # Source language selection (English and Russian only)
+        from_label = tk.Label(self.home_frame, text=self.t("TITLE_LANGUAGE_FROM"), 
                             font=("Arial", 12), bg="white", anchor="w")
         from_label.pack(padx=60, anchor="w")
         self.from_combo = ttk.Combobox(self.home_frame, 
-                                     values=[self.t("VALUE_ENG"), self.t("VALUE_ARM")], 
+                                     values=[self.t("VALUE_ENG"), self.t("VALUE_RU")], 
                                      state="readonly", font=("Arial", 12))
         self.from_combo.current(self.current_selections["from_lang"])
         self.from_combo.pack(padx=60, pady=(0, 20), anchor="w")
         self.from_combo.bind("<<ComboboxSelected>>", lambda e: self.update_current_selection("from_lang"))
-        self.widgets_to_translate[from_label] = "TITLE_LABGUAGE_FROM"
-        self.widgets_to_translate[self.from_combo] = ("VALUE_ENG", "VALUE_ARM")
+        self.widgets_to_translate[from_label] = "TITLE_LANGUAGE_FROM"
+        self.widgets_to_translate[self.from_combo] = ("VALUE_ENG", "VALUE_RU")
 
-        # Выбор языка перевода
+        # Target language selection (English, Russian, Armenian)
         to_label = tk.Label(self.home_frame, text=self.t("TITLE_LANGUAGE_TO"), 
                            font=("Arial", 12), bg="white", anchor="w")
         to_label.pack(padx=60, anchor="w")
         self.to_combo = ttk.Combobox(self.home_frame, 
-                                   values=[self.t("VALUE_ENG"), self.t("VALUE_ARM")], 
+                                   values=[self.t("VALUE_ENG"), self.t("VALUE_RU"), self.t("VALUE_ARM")], 
                                    state="readonly", font=("Arial", 12))
         self.to_combo.current(self.current_selections["to_lang"])
         self.to_combo.pack(padx=60, pady=(0, 30), anchor="w")
         self.to_combo.bind("<<ComboboxSelected>>", lambda e: self.update_current_selection("to_lang"))
         self.widgets_to_translate[to_label] = "TITLE_LANGUAGE_TO"
-        self.widgets_to_translate[self.to_combo] = ("VALUE_ENG", "VALUE_ARM")
+        self.widgets_to_translate[self.to_combo] = ("VALUE_ENG", "VALUE_RU", "VALUE_ARM")
 
-        # Кнопка перевода
+        # Translate button
         self.translate_btn = tk.Button(
             self.home_frame, 
             text=self.t("BTN_RUN_TRANSLATION"), 
@@ -160,7 +207,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.translate_btn.pack(pady=20)
         self.widgets_to_translate[self.translate_btn] = "BTN_RUN_TRANSLATION"
 
-        # Текстовое поле для вывода
+        # Output text area
         self.text_area = scrolledtext.ScrolledText(
             self.home_frame, 
             wrap=tk.WORD, 
@@ -171,14 +218,14 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         )
         self.text_area.pack(padx=40, pady=(0, 20), fill=tk.BOTH, expand=True)
 
-        # Экран Settings
+        # Settings screen
         self.settings_frame = tk.Frame(self, bg="white")
         settings_title = tk.Label(self.settings_frame, text=self.t("LABEL_SETTINGS"), 
                                 font=("Arial", 20, "bold"), bg="white")
         settings_title.pack(pady=(30, 10), anchor="w", padx=60)
         self.widgets_to_translate[settings_title] = "LABEL_SETTINGS"
 
-        # Язык интерфейса
+        # Interface language selection
         int_lang_label = tk.Label(self.settings_frame, text=self.t("LABEL_INTERFACE_LANG"), 
                                 font=("Arial", 12), bg="white", anchor="w")
         int_lang_label.pack(padx=60, anchor="w")
@@ -191,7 +238,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.widgets_to_translate[int_lang_label] = "LABEL_INTERFACE_LANG"
         self.widgets_to_translate[self.int_lang_combo] = ("VALUE_ENG", "VALUE_ARM")
 
-        # Тема
+        # Theme selection
         theme_label = tk.Label(self.settings_frame, text=self.t("LABEL_THEME"), 
                              font=("Arial", 12), bg="white", anchor="w")
         theme_label.pack(padx=60, anchor="w")
@@ -204,28 +251,22 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.widgets_to_translate[theme_label] = "LABEL_THEME"
         self.widgets_to_translate[self.theme_combo] = ("VALUE_THEME_LIGHT", "VALUE_THEME_DARK")
 
-        # Экран Results
+        # Results screen
         self.result_frame = tk.Frame(self, bg="white")
         result_title = tk.Label(self.result_frame, text=self.t("LABEL_RESULTS"), 
                               font=("Arial", 20, "bold"), bg="white")
         result_title.pack(pady=(30, 10), anchor="w", padx=60)
         self.widgets_to_translate[result_title] = "LABEL_RESULTS"
         
-        # Контейнер для списка результатов
+        # Results container with scrollbar
         self.results_container = tk.Frame(self.result_frame, bg="white")
         self.results_container.pack(padx=40, pady=(0, 20), fill=tk.BOTH, expand=True)
         
-        # Полоса прокрутки
         self.results_canvas = tk.Canvas(self.results_container, bg="white", highlightthickness=0)
         scrollbar = ttk.Scrollbar(self.results_container, orient="vertical", command=self.results_canvas.yview)
         self.scrollable_frame = tk.Frame(self.results_canvas, bg="white")
         
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.results_canvas.configure(
-                scrollregion=self.results_canvas.bbox("all")
-            )
-        )
+        self.scrollable_frame.bind("<Configure>", lambda e: self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all")))
         
         self.results_canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.results_canvas.configure(yscrollcommand=scrollbar.set)
@@ -240,6 +281,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         }
 
     def create_bottom_nav(self):
+        """Create bottom navigation bar"""
         nav_frame = tk.Frame(self, bg="#f5f5f5", height=60)
         nav_frame.pack(side="bottom", fill="x")
         nav_frame.pack_propagate(False)
@@ -275,6 +317,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
             }
 
     def show_screen(self, screen_name):
+        """Show the specified screen"""
         if self.active_screen == screen_name:
             return
 
@@ -283,6 +326,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
 
         self.screens[screen_name].pack(fill="both", expand=True)
 
+        # Update navigation buttons appearance
         for name, btn in self.nav_buttons.items():
             if name == screen_name:
                 btn["icon"].configure(image=self.icons[f"{name.lower()}_enabled"])
@@ -299,12 +343,14 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
             self.load_results()
 
     def toggle_translation(self):
+        """Toggle translation on/off"""
         if not self.is_translating:
             self.start_translation()
         else:
             self.stop_translation()
 
     def start_translation(self):
+        """Start translation process"""
         self.is_translating = True
         self.translate_btn.config(text=self.t("BTN_STOP_TRANSLATION"))
         self.from_combo.config(state="disabled")
@@ -313,9 +359,24 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.text_area.insert(tk.END, "Starting translation...\n")
         
         self.translation_start_time = int(time.time() * 1000)
-        source_lang = "en" if self.from_combo.get() == self.t("VALUE_ENG") else "hy"
-        target_lang = "en" if self.to_combo.get() == self.t("VALUE_ENG") else "hy"
         
+        # Determine source and target languages
+        if self.from_combo.get() == self.t("VALUE_ENG"):
+            source_lang = "en"
+        elif self.from_combo.get() == self.t("VALUE_RU"):
+            source_lang = "ru"
+        
+        if self.to_combo.get() == self.t("VALUE_ENG"):
+            target_lang = "en"
+        elif self.to_combo.get() == self.t("VALUE_RU"):
+            target_lang = "ru"
+        elif self.to_combo.get() == self.t("VALUE_ARM"):
+            target_lang = "hy"
+        
+        # Initialize appropriate speech recognition model
+        self._initialize_audio_model(source_lang)
+        
+        # Start translation thread
         self.translation_thread = threading.Thread(
             target=self.run_translation,
             args=(source_lang, target_lang),
@@ -324,6 +385,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         self.translation_thread.start()
 
     def stop_translation(self):
+        """Stop translation process"""
         self.is_translating = False
         self.translate_btn.config(text=self.t("BTN_RUN_TRANSLATION"))
         self.from_combo.config(state="readonly")
@@ -331,43 +393,45 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         
         self.translation_stop_time = int(time.time() * 1000)
         
-        # Сохраняем все накопленные переводы в один файл
+        # Save buffered translations
         if self.translation_buffer:
             self.save_translation_result("\n".join(self.translation_buffer))
-            self.translation_buffer = []  # Очищаем буфер
+            self.translation_buffer = []
         
-        # Останавливаем сервисы
+        # Stop audio services
         if self.receiver:
             self.receiver.stop_audio_stream_receiving()
-        if self.audio_callback:
-            try:
-                self.audio_callback.stop()
-            except Exception as e:
-                print(f"Error stopping callback: {e}")
         
-        # Удаляем временные файлы
+        # Stop audio processing
+        self.audio_running = False
+        if self.audio_processing_thread:
+            self.audio_processing_thread.join(timeout=1)
+        
+        # Clean up temporary files
         self.cleanup_audio_files()
 
     def run_translation(self, source_lang: str, target_lang: str):
+        """Main translation process running in a separate thread"""
         try:
-            self.audio_callback = MyAudioCallback()
-            self.audio_callback.translator.set_text_translator_listener(self)
+            # Set default languages for translator
+            self.translator.set_default_languages(source_lang, target_lang)
             
+            # Test API connection
             try:
-                test_result = self.audio_callback.translator.translate("test", source_lang, target_lang)
+                test_result = self.translator.translate("test", source_lang, target_lang)
                 if test_result is None:
-                    raise ConnectionError("API недоступен")
+                    raise ConnectionError("API unavailable")
                 self.api_available = True
                 self.text_area.insert(tk.END, "Translation started successfully...\n")
             except Exception as api_error:
                 self.api_available = False
                 self.text_area.insert(tk.END, f"Using offline mode: {api_error}\n")
             
-            self.audio_callback.translator.set_default_languages(source_lang, target_lang)
-            
+            # Start audio receiver
             self.receiver = BaseAudioStreamReceiver()
-            self.receiver.set_audio_stream_listener(self.audio_callback)
+            self.receiver.set_audio_stream_listener(self)
             
+            # Keep thread alive while translating
             while self.is_translating:
                 time.sleep(0.1)
                 
@@ -376,20 +440,85 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
         finally:
             if hasattr(self, 'receiver') and self.receiver:
                 self.receiver.stop_audio_stream_receiving()
-            if hasattr(self, 'audio_callback') and self.audio_callback:
-                try:
-                    self.audio_callback.stop()
-                except:
-                    pass
 
-    def do_on_text_translated(self, text):
-        """Callback для переведенного текста"""
-        self.text_area.insert(tk.END, f"{text}\n")
+    def do_on_audio_stream_playing(self, filename: str):
+        """Handle new audio file from stream"""
+        self.audio_files_queue.put(filename)
+        self._start_audio_processing()
+
+    def _start_audio_processing(self):
+        """Start audio processing thread"""
+        if self.audio_processing_thread is None or not self.audio_processing_thread.is_alive():
+            self.audio_running = True
+            self.audio_processing_thread = threading.Thread(
+                target=self._process_audio_queue,
+                daemon=True
+            )
+            self.audio_processing_thread.start()
+
+    def _process_audio_queue(self):
+        """Process audio files from queue"""
+        while self.audio_running:
+            try:
+                with self.audio_lock:
+                    if self.currently_processing:
+                        continue
+
+                    filename = self.audio_files_queue.get(timeout=1)
+                    self.currently_processing = True
+
+                # Process audio file
+                self.audio_to_text.process_audio_file(filename)
+                
+                # Wait for processing to complete
+                while True:
+                    with self.audio_lock:
+                        if not self.currently_processing:
+                            break
+                    time.sleep(0.1)
+
+                self.audio_files_queue.task_done()
+
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Audio processing error: {e}")
+                with self.audio_lock:
+                    self.currently_processing = False
+
+    def do_on_audio_to_text(self, recognized_text: str):
+        """Handle recognized text from audio"""
+        # Determine languages from UI
+        if self.from_combo.get() == self.t("VALUE_ENG"):
+            source_lang = "en"
+        elif self.from_combo.get() == self.t("VALUE_RU"):
+            source_lang = "ru"
+        
+        if self.to_combo.get() == self.t("VALUE_ENG"):
+            target_lang = "en"
+        elif self.to_combo.get() == self.t("VALUE_RU"):
+            target_lang = "ru"
+        elif self.to_combo.get() == self.t("VALUE_ARM"):
+            target_lang = "hy"
+        
+        # Perform translation
+        self.translator.translate(
+            text=recognized_text,
+            source_lang=source_lang,
+            target_lang=target_lang
+        )
+        
+        with self.audio_lock:
+            self.currently_processing = False
+
+    def do_on_text_translated(self, translated_text: str):
+        """Handle translated text result"""
+        self.text_area.insert(tk.END, f"{translated_text}\n")
         self.text_area.see(tk.END)
-        # Добавляем текст в буфер вместо сохранения в файл
-        self.translation_buffer.append(text)
+        self.translation_buffer.append(translated_text)
 
     def change_interface_language(self, event):
+        """Change interface language"""
         selected = self.int_lang_combo.get()
         lang = "en" if selected == self.t("VALUE_ENG") else "hy"
         
@@ -399,7 +528,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
             self.update_ui_language()
     
     def update_current_selection(self, key):
-        """Обновляет текущие выбранные значения комбобоксов"""
+        """Update current combobox selections"""
         if key == "from_lang":
             self.current_selections["from_lang"] = self.from_combo.current()
         elif key == "to_lang":
@@ -410,39 +539,44 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
             self.current_selections["theme"] = self.theme_combo.current()
     
     def update_ui_language(self):
-        """Обновляет весь интерфейс при смене языка"""
-        # Обновляем виджеты
+        """Update all UI elements with current language"""
+        # Update widgets
         for widget, lexeme in self.widgets_to_translate.items():
             if isinstance(lexeme, tuple):
-                # Обновляем значения комбобоксов
+                # Update combobox values
                 new_values = [self.t(l) for l in lexeme]
                 widget['values'] = new_values
                 
-                # Восстанавливаем выбор
+                # Restore selection
                 if widget == self.from_combo:
                     widget.current(self.current_selections["from_lang"])
                 elif widget == self.to_combo:
-                    widget.current(self.current_selections["to_lang"])
+                    # Force Armenian language when interface is Armenian
+                    if self.current_lang == "hy":
+                        widget.current(self.LANG_HY)
+                    else:
+                        widget.current(self.current_selections["to_lang"])
                 elif widget == self.int_lang_combo:
                     widget.current(self.current_selections["interface_lang"])
                 elif widget == self.theme_combo:
                     widget.current(self.current_selections["theme"])
             else:
-                # Обновляем текст виджетов
+                # Update widget text
                 if hasattr(widget, 'config'):
                     widget.config(text=self.t(lexeme))
         
-        # Обновляем нижнее меню
+        # Update navigation bar
         for name, btn in self.nav_buttons.items():
             btn["text"].config(text=self.t(btn["lexeme"]))
         
-        # Обновляем текст кнопки перевода
+        # Update translate button text
         if self.is_translating:
             self.translate_btn.config(text=self.t("BTN_STOP_TRANSLATION"))
         else:
             self.translate_btn.config(text=self.t("BTN_RUN_TRANSLATION"))
 
     def change_theme(self, event):
+        """Change application theme"""
         selected = self.theme_combo.get()
         theme = "light" if selected == self.t("VALUE_THEME_LIGHT") else "dark"
         
@@ -452,7 +586,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
             self.apply_theme()
     
     def apply_theme(self):
-        """Применяет выбранную тему"""
+        """Apply selected theme to all UI elements"""
         try:
             if self.current_theme == "dark":
                 bg_color = "#1e1e1e"
@@ -479,10 +613,10 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                 nav_bg = "#f5f5f5"
                 nav_highlight = "#e0e0e0"
             
-            # Основное окно
+            # Main window
             self.config(bg=bg_color)
             
-            # Функция для безопасного изменения виджетов
+            # Safe widget configuration
             def safe_config(widget, **kwargs):
                 if hasattr(widget, 'config'):
                     try:
@@ -490,7 +624,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                     except tk.TclError:
                         pass
             
-            # Применяем к фреймам
+            # Apply to frames
             for frame in [self.home_frame, self.settings_frame, self.result_frame]:
                 safe_config(frame, bg=bg_color)
                 for widget in frame.winfo_children():
@@ -501,10 +635,10 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                     elif isinstance(widget, (scrolledtext.ScrolledText, tk.Text)):
                         safe_config(widget, bg=text_bg, fg=fg_color, insertbackground=fg_color)
             
-            # Кнопка перевода
+            # Translate button
             safe_config(self.translate_btn, bg=btn_bg, fg=btn_fg)
             
-            # Стиль для Combobox с рамкой
+            # Combobox style
             style = ttk.Style()
             style.theme_use('clam')
             style.configure("TCombobox", 
@@ -527,7 +661,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                      lightcolor=[('readonly', combobox_border)],
                      darkcolor=[('readonly', combobox_border)])
             
-            # Настройка закругленных углов для кнопок
+            # Button style
             style.configure("TButton",
                           borderwidth=1,
                           relief="solid",
@@ -540,11 +674,11 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                     background=[('active', btn_bg)],
                     foreground=[('active', btn_fg)])
             
-            # Нижнее меню
+            # Navigation bar
             nav_frame = self.nav_buttons["Home"]["frame"].master
             safe_config(nav_frame, bg=nav_bg)
             
-            # Добавляем прямоугольник с закругленными краями под нижним меню для темной темы
+            # Navigation highlight for dark theme
             if hasattr(self, 'nav_highlight_frame'):
                 self.nav_highlight_frame.destroy()
             
@@ -560,6 +694,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                 self.nav_highlight_frame.lower(nav_frame)
                 self.nav_highlight_frame.config(highlightbackground="#3a3a3a")
             
+            # Update navigation buttons
             for name, btn in self.nav_buttons.items():
                 safe_config(btn["frame"], bg=nav_bg)
                 safe_config(btn["icon"], bg=nav_bg)
@@ -571,17 +706,17 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                 font = ("Arial", 12, "bold") if name == self.active_screen else ("Arial", 12)
                 safe_config(btn["text"], font=font)
                 
-            # Настройка скроллируемого фрейма результатов
+            # Results scrollable frame
             if hasattr(self, 'results_container'):
                 safe_config(self.results_container, bg=bg_color)
                 safe_config(self.results_canvas, bg=bg_color)
                 safe_config(self.scrollable_frame, bg=bg_color)
                 
         except Exception as e:
-            print(f"Error applying theme: {e}")
+            print(f"Theme application error: {e}")
 
     def cleanup_audio_files(self):
-        """Удаляет временные аудиофайлы"""
+        """Clean up temporary audio files"""
         try:
             if self.audio_results_dir.exists():
                 for file in self.audio_results_dir.glob("*.wav"):
@@ -590,45 +725,38 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                     except Exception as e:
                         print(f"Error deleting audio file {file}: {e}")
         except Exception as e:
-            print(f"Error cleaning audio files: {e}")
+            print(f"Audio cleanup error: {e}")
 
     def save_translation_result(self, result: str):
-        """Сохраняет результат перевода в один файл"""
+        """Save translation results to file"""
         try:
-            # Создаем имя файла на основе времени остановки перевода
             filename = f"translation_{self.translation_stop_time}.txt"
             filepath = self.translation_dir / filename
             
-            # Убедимся, что директория существует
             self.translation_dir.mkdir(parents=True, exist_ok=True)
             
-            # Сохраняем весь накопленный перевод
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(result)
             
-            # Убедимся, что директория для res.txt существует
             self.results_info_file.parent.mkdir(parents=True, exist_ok=True)
             
-            # Добавляем запись в res.txt
             with open(self.results_info_file, 'a', encoding='utf-8') as f:
                 f.write(f"{filepath}\n")
                 
-            self.text_area.insert(tk.END, f"\nAll translations saved to: {filepath}\n")
-            print(f"Saved all translations to: {filepath}")
+            self.text_area.insert(tk.END, f"\nTranslations saved to: {filepath}\n")
         except Exception as e:
             error_msg = f"\nError saving results: {str(e)}\n"
             self.text_area.insert(tk.END, error_msg)
-            print(error_msg)
             messagebox.showerror("Error", f"Failed to save results: {str(e)}")
 
     def load_results(self):
-        """Загружает историю переводов"""
+        """Load translation history"""
         try:
-            # Очищаем предыдущие результаты
+            # Clear previous results
             for widget in self.scrollable_frame.winfo_children():
                 widget.destroy()
             
-            # Проверяем существование файла и его содержимое
+            # Check if results file exists
             if not self.results_info_file.exists():
                 no_results_label = tk.Label(
                     self.scrollable_frame, 
@@ -640,6 +768,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                 no_results_label.pack(pady=20)
                 return
                 
+            # Load results from file
             with open(self.results_info_file, 'r', encoding='utf-8') as f:
                 lines = [line.strip() for line in f.readlines() if line.strip()]
                 
@@ -654,16 +783,15 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                 no_results_label.pack(pady=20)
                 return
             
-            # Отображаем результаты в обратном порядке (новые сверху)
+            # Display results in reverse order (newest first)
             for filepath in reversed(lines):
                 if not filepath:
                     continue
                 
                 try:
-                    # Получаем только имя файла из полного пути
                     filename = Path(filepath).name
                     
-                    # Создаем кликабельную кнопку для каждого результата
+                    # Create clickable result entry
                     result_frame = tk.Frame(
                         self.scrollable_frame,
                         bg="white" if self.current_theme == "light" else "#2d2d2d"
@@ -686,7 +814,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
                     result_btn.bind("<Button-1>", lambda e, p=filepath: self.open_result_file(p))
                     result_btn.pack(fill="x")
                     
-                    # Разделитель
+                    # Separator
                     separator = tk.Frame(
                         result_frame,
                         height=1,
@@ -709,7 +837,7 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
             error_label.pack(pady=20)
 
     def open_result_file(self, filepath):
-        """Открывает файл с результатом перевода в проводнике"""
+        """Open result file in file explorer"""
         try:
             path = Path(filepath)
             if path.exists():
@@ -720,8 +848,25 @@ class TranslatorApp(tk.Tk, ITranslatorCallback):
             messagebox.showerror("Error", f"Cannot open file: {str(e)}")
 
     def on_closing(self):
+        """Handle window closing event"""
+        # Stop all translation processes
         self.stop_translation()
+        
+        # Ensure all threads are stopped
+        if hasattr(self, 'audio_processing_thread') and self.audio_processing_thread:
+            self.audio_processing_thread.join(timeout=0.5)
+        
+        if hasattr(self, 'translation_thread') and self.translation_thread:
+            self.translation_thread.join(timeout=0.5)
+        
+        # Clean up translator - bypass the type check for None
+        if hasattr(self, 'translator') and self.translator:
+            self.translator._listener = None  # Direct assignment instead of using setter
+        
+        # Forcefully terminate the application
+        self.quit()
         self.destroy()
+        os._exit(0)
 
 if __name__ == "__main__":
     app = TranslatorApp()
